@@ -1,0 +1,13 @@
+{{define "content"}}
+<header class="header">
+    <h1>Balance Mirror</h1>
+    <p>Select a page to view links</p>
+</header>
+<main class="link-list">
+    {{range $id, $url := .Pages}}
+    <a href="/{{$id}}" class="btn btn-primary">
+        {{$id}}
+    </a>
+    {{end}}
+</main>
+{{end}}

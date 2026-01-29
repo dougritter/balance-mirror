@@ -1,0 +1,13 @@
+{{define "content"}}
+<header class="header">
+    <a href="/" class="back-link">← Back</a>
+    <h1>{{.Title}}</h1>
+</header>
+<main class="link-list">
+    {{range .Links}}
+    <a href="{{.URL}}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+        {{.Text}}
+    </a>
+    {{end}}
+</main>
+{{end}}
