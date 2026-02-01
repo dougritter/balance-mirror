@@ -51,8 +51,31 @@ func TestHandleRoot_Proxy(t *testing.T) {
 			<html>
 				<body>
 					<a href="https://zoom.us/j/123456" data-testid="LinkClickTriggerLink">Zoom Link</a>
-					<a href="https://example.com/2" data-testid="LinkClickTriggerLink">Non-Zoom Link</a>
+					<a href="https://www.youtube.com/watch?v=123" data-testid="LinkClickTriggerLink">YouTube Link</a>
+					<a href="https://drive.google.com/file/d/abc/view" data-testid="LinkClickTriggerLink">Drive PDF Link</a>
+					<a href="https://example.com/doc.pdf" data-testid="LinkClickTriggerLink">Direct PDF Link</a>
+					<a href="https://example.com/2" data-testid="LinkClickTriggerLink">Ignored Link</a>
 					<a href="#">Ignored</a>
+					<script id="__NEXT_DATA__" type="application/json">
+					{
+						"props": {
+							"pageProps": {
+								"account": {
+									"links": [
+										{
+											"title": "Hidden YouTube Link",
+											"url": "https://www.youtube.com/watch?v=hidden"
+										},
+										{
+											"title": "Hidden Zoom Link",
+											"url": "https://zoom.us/j/hidden"
+										}
+									]
+								}
+							}
+						}
+					}
+					</script>
 				</body>
 			</html>
 		`)
@@ -87,10 +110,22 @@ func TestHandleRoot_Proxy(t *testing.T) {
 	if !strings.Contains(body, "Zoom Link") {
 		t.Error("Body does not contain 'Zoom Link'")
 	}
-	if !strings.Contains(body, "https://zoom.us/j/123456") {
-		t.Error("Body does not contain 'https://zoom.us/j/123456'")
+	if !strings.Contains(body, "YouTube Link") {
+		t.Error("Body does not contain 'YouTube Link'")
 	}
-	if strings.Contains(body, "Non-Zoom Link") {
-		t.Error("Body contains 'Non-Zoom Link' which should be filtered out")
+	if !strings.Contains(body, "Drive PDF Link") {
+		t.Error("Body does not contain 'Drive PDF Link'")
+	}
+	if !strings.Contains(body, "Direct PDF Link") {
+		t.Error("Body does not contain 'Direct PDF Link'")
+	}
+	if strings.Contains(body, "Ignored Link") {
+		t.Error("Body contains 'Ignored Link' which should be filtered out")
+	}
+	if !strings.Contains(body, "Hidden YouTube Link") {
+		t.Error("Body does not contain 'Hidden YouTube Link' from JSON")
+	}
+	if !strings.Contains(body, "Hidden Zoom Link") {
+		t.Error("Body does not contain 'Hidden Zoom Link' from JSON")
 	}
 }

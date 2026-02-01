@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -54,8 +55,13 @@ func Scrape(url string) ([]Link, error) {
 			return
 		}
 
-		// Filter: Only include links with "zoom" in the URL (case-insensitive)
-		if !strings.Contains(strings.ToLower(href), "zoom") {
+		// Filter: Include links with "zoom", "youtube", "youtu.be", ".pdf" or from "drive.google.com"
+		lowerHref := strings.ToLower(href)
+		isZoom := strings.Contains(lowerHref, "zoom")
+		isYouTube := strings.Contains(lowerHref, "youtube") || strings.Contains(lowerHref, "youtu.be")
+		isPDF := strings.HasSuffix(lowerHref, ".pdf") || strings.Contains(lowerHref, "drive.google.com")
+
+		if !isZoom && !isYouTube && !isPDF {
 			return
 		}
 
@@ -65,5 +71,63 @@ func Scrape(url string) ([]Link, error) {
 		})
 	})
 
-	return links, nil
+	// Also extract links from __NEXT_DATA__ which contains embedded content (like YouTube videos)
+	// that might not be rendered as simple <a> tags in the initial HTML.
+	nextData := doc.Find("#__NEXT_DATA__").Text()
+	if nextData != "" {
+		var data interface{}
+		if err := json.Unmarshal([]byte(nextData), &data); err == nil {
+			extractLinksFromJSON(data, &links)
+		}
+	}
+
+	return deduplicateLinks(links), nil
+}
+
+func extractLinksFromJSON(data interface{}, links *[]Link) {
+	switch v := data.(type) {
+	case map[string]interface{}:
+		// Check if this object looks like a link
+		url, hasUrl := v["url"].(string)
+		title, hasTitle := v["title"].(string)
+
+		if hasUrl && hasTitle && url != "" && title != "" {
+			// Apply the same filters
+			lowerHref := strings.ToLower(url)
+			isZoom := strings.Contains(lowerHref, "zoom")
+			isYouTube := strings.Contains(lowerHref, "youtube") || strings.Contains(lowerHref, "youtu.be")
+			isPDF := strings.HasSuffix(lowerHref, ".pdf") || strings.Contains(lowerHref, "drive.google.com")
+
+			if isZoom || isYouTube || isPDF {
+				*links = append(*links, Link{
+					Text: strings.TrimSpace(title),
+					URL:  url,
+				})
+			}
+		}
+
+		// Recurse into values
+		for _, val := range v {
+			extractLinksFromJSON(val, links)
+		}
+	case []interface{}:
+		// Recurse into elements
+		for _, val := range v {
+			extractLinksFromJSON(val, links)
+		}
+	}
+}
+
+func deduplicateLinks(links []Link) []Link {
+	seen := make(map[string]bool)
+	var unique []Link
+	for _, link := range links {
+		// Create a unique key based on URL (and maybe text?)
+		// Linktree matches usually imply same URL = same link
+		if !seen[link.URL] {
+			seen[link.URL] = true
+			unique = append(unique, link)
+		}
+	}
+	return unique
 }
