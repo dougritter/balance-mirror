@@ -14,6 +14,16 @@ type Link struct {
 	URL  string
 }
 
+func isAllowedURL(href string) bool {
+	lower := strings.ToLower(href)
+	return strings.Contains(lower, "zoom") ||
+		strings.Contains(lower, "youtube") ||
+		strings.Contains(lower, "youtu.be") ||
+		strings.HasSuffix(lower, ".pdf") ||
+		strings.Contains(lower, "drive.google.com") ||
+		strings.Contains(lower, "bit.ly")
+}
+
 // Scrape fetches the given URL and extracts links from it.
 // It specifically looks for Linktree-style buttons.
 func Scrape(url string) ([]Link, error) {
@@ -55,13 +65,7 @@ func Scrape(url string) ([]Link, error) {
 			return
 		}
 
-		// Filter: Include links with "zoom", "youtube", "youtu.be", ".pdf" or from "drive.google.com"
-		lowerHref := strings.ToLower(href)
-		isZoom := strings.Contains(lowerHref, "zoom")
-		isYouTube := strings.Contains(lowerHref, "youtube") || strings.Contains(lowerHref, "youtu.be")
-		isPDF := strings.HasSuffix(lowerHref, ".pdf") || strings.Contains(lowerHref, "drive.google.com")
-
-		if !isZoom && !isYouTube && !isPDF {
+		if !isAllowedURL(href) {
 			return
 		}
 
@@ -91,19 +95,11 @@ func extractLinksFromJSON(data interface{}, links *[]Link) {
 		url, hasUrl := v["url"].(string)
 		title, hasTitle := v["title"].(string)
 
-		if hasUrl && hasTitle && url != "" && title != "" {
-			// Apply the same filters
-			lowerHref := strings.ToLower(url)
-			isZoom := strings.Contains(lowerHref, "zoom")
-			isYouTube := strings.Contains(lowerHref, "youtube") || strings.Contains(lowerHref, "youtu.be")
-			isPDF := strings.HasSuffix(lowerHref, ".pdf") || strings.Contains(lowerHref, "drive.google.com")
-
-			if isZoom || isYouTube || isPDF {
-				*links = append(*links, Link{
-					Text: strings.TrimSpace(title),
-					URL:  url,
-				})
-			}
+		if hasUrl && hasTitle && url != "" && title != "" && isAllowedURL(url) {
+			*links = append(*links, Link{
+				Text: strings.TrimSpace(title),
+				URL:  url,
+			})
 		}
 
 		// Recurse into values
