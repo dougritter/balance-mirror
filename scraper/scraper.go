@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
+	urlpkg "net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -30,21 +31,33 @@ func isAllowedURL(href string) bool {
 // Scrape fetches the given URL and extracts links from it.
 // It specifically looks for Linktree-style buttons.
 // maxAttempts is how many times fetchDocument tries before giving up.
-const maxAttempts = 5
+const maxAttempts = 3
+
+// buildRequestURL returns the URL to actually fetch. When SCRAPERAPI_KEY is
+// set, requests are routed through ScraperAPI so the outbound IP is a trusted
+// residential/proxy exit instead of a datacenter IP (which Linktree blocks
+// with 406). When unset, the target URL is fetched directly.
+func buildRequestURL(target string) string {
+	key := os.Getenv("SCRAPERAPI_KEY")
+	if key == "" {
+		return target
+	}
+	return "https://api.scraperapi.com/?" + urlpkg.Values{
+		"api_key": {key},
+		"url":     {target},
+	}.Encode()
+}
 
 // fetchDocument performs a single browser-like GET and parses the response.
 // It returns the status code alongside the document so the caller can retry
-// on non-200 responses (Linktree/Fastly intermittently returns 406 to
-// datacenter IPs).
-func fetchDocument(url string) (*goquery.Document, int, error) {
-	req, err := http.NewRequest("GET", url, nil)
+// on non-200 responses.
+func fetchDocument(target string) (*goquery.Document, int, error) {
+	req, err := http.NewRequest("GET", buildRequestURL(target), nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	// Send a full set of browser-like headers. Sending only User-Agent is a
-	// common bot signal; from datacenter IPs Linktree/Fastly returns 406 for
-	// requests missing the Accept/Accept-Language/Sec-Fetch headers a real
-	// browser sends.
+	// common bot signal.
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
@@ -54,7 +67,8 @@ func fetchDocument(url string) (*goquery.Document, int, error) {
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// ScraperAPI may take a while to render/return; allow a generous timeout.
+	client := &http.Client{Timeout: 70 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -72,33 +86,31 @@ func fetchDocument(url string) (*goquery.Document, int, error) {
 	return doc, res.StatusCode, nil
 }
 
-func Scrape(url string) ([]Link, error) {
-	// Linktree/Fastly intermittently returns 406 to datacenter IPs (Fly,
-	// GitHub Actions). Retry with exponential backoff; a real browser never
-	// hammers the endpoint, so pacing requests gets us through.
+func Scrape(target string) ([]Link, error) {
+	// A light retry handles transient failures. We intentionally do NOT use
+	// aggressive backoff against direct datacenter requests: testing showed
+	// repeated direct requests make Linktree's 406 blocking worse, not better.
+	// Reliable scraping requires a trusted exit IP via SCRAPERAPI_KEY.
 	var doc *goquery.Document
 	var lastStatus int
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		var err error
-		doc, lastStatus, err = fetchDocument(url)
+		doc, lastStatus, err = fetchDocument(target)
 		if err != nil {
 			return nil, err
 		}
 		if lastStatus == 200 {
 			break
 		}
-		log.Printf("attempt %d/%d for %s: status %d, retrying", attempt, maxAttempts, url, lastStatus)
+		log.Printf("attempt %d/%d for %s: status %d", attempt, maxAttempts, target, lastStatus)
 		doc = nil
 		if attempt < maxAttempts {
-			// Backoff: 1s, 2s, 4s, 8s with jitter.
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
-			jitter := time.Duration(rand.Int63n(int64(time.Second)))
-			time.Sleep(backoff + jitter)
+			time.Sleep(time.Duration(attempt) * time.Second)
 		}
 	}
 
 	if doc == nil {
-		return nil, fmt.Errorf("failed to fetch %s after %d attempts (last status %d)", url, maxAttempts, lastStatus)
+		return nil, fmt.Errorf("failed to fetch %s after %d attempts (last status %d); set SCRAPERAPI_KEY to route through a trusted proxy", target, maxAttempts, lastStatus)
 	}
 
 	var links []Link

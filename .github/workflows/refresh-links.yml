@@ -1,0 +1,41 @@
+name: Refresh Links
+
+on:
+  schedule:
+    # Every 3 hours. Fits ScraperAPI free tier (~960 req/month at 4 pages).
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-links
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Scrape Linktree via ScraperAPI and write links.json
+        env:
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
+        run: go run ./cmd/refresh
+
+      - name: Commit links.json if changed
+        run: |
+          if git diff --quiet -- links.json; then
+            echo "No changes to links.json"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add links.json
+          git commit -m "chore: refresh links.json"
+          git push

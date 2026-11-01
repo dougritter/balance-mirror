@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -25,6 +27,32 @@ type PageData struct {
 
 type IndexData struct {
 	Pages map[string]string
+}
+
+// linkCache mirrors the structure written by cmd/refresh into links.json.
+type linkCache struct {
+	GeneratedAt string                    `json:"generated_at"`
+	Pages       map[string][]scraper.Link `json:"pages"`
+}
+
+// cachedLinks returns links for the given id from links.json, if present.
+// The cache is populated out-of-band (GitHub Actions via a trusted proxy)
+// because the Fly server's datacenter IP is blocked by Linktree.
+func cachedLinks(id string) ([]scraper.Link, bool) {
+	data, err := os.ReadFile("links.json")
+	if err != nil {
+		return nil, false
+	}
+	var c linkCache
+	if err := json.Unmarshal(data, &c); err != nil {
+		log.Printf("failed to parse links.json: %v", err)
+		return nil, false
+	}
+	links, ok := c.Pages[id]
+	if !ok || len(links) == 0 {
+		return nil, false
+	}
+	return links, true
 }
 
 func RegisterRoutes() {
@@ -79,13 +107,19 @@ func renderIndex(w http.ResponseWriter) {
 }
 
 func renderLinks(w http.ResponseWriter, title, url string) {
-	links, err := scraper.Scrape(url)
-	if err != nil {
-		http.Error(w, "Failed to scrape content", http.StatusInternalServerError)
-		log.Printf("Scraper error for %s: %v", url, err)
-		return
+	// Prefer the pre-scraped cache (links.json), which is refreshed out-of-band
+	// from a trusted IP. Linktree blocks this server's datacenter IP, so a live
+	// scrape here will usually fail; it's only a best-effort fallback.
+	links, ok := cachedLinks(title)
+	if !ok {
+		var err error
+		links, err = scraper.Scrape(url)
+		if err != nil {
+			http.Error(w, "Failed to load content", http.StatusInternalServerError)
+			log.Printf("No cache and live scrape failed for %s: %v", url, err)
+			return
+		}
 	}
-
 	tmplPath := filepath.Join("templates", "layout.html")
 	linksPath := filepath.Join("templates", "links.html")
 
