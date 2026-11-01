@@ -9,24 +9,36 @@ Live at: https://balance-mirror.fly.dev
 ## Project structure
 
 ```
-main.go               Entry point — starts the HTTP server
-server/server.go      Route registration and HTTP handlers
-scraper/scraper.go    Fetches and parses a Linktree page
-templates/            HTML templates (layout, index, links page)
-static/               CSS
-docs/                 This documentation
-Dockerfile            Container image for deployment
-fly.toml              fly.io deployment configuration
+main.go                       Entry point — starts the HTTP server
+server/server.go              Routes, handlers, and links.json cache loading
+scraper/scraper.go            Fetches and parses a Linktree page (optional ScraperAPI)
+cmd/refresh/main.go           CLI to scrape pages and merge into links.json
+links.json                    Pre-scraped link cache (served to users)
+templates/                    HTML templates (layout, index, links page)
+static/                       CSS
+docs/                         This documentation
+.github/workflows/            CI: refresh-links.yml (cron scrape), fly-deploy.yml
+Dockerfile                    Container image for deployment
+fly.toml                      fly.io deployment configuration
 ```
 
 ---
 
 ## How a request flows
 
+> **Note:** The server no longer scrapes Linktree on every request. Linktree
+> blocks the Fly datacenter IP, so links are pre-scraped out-of-band and cached
+> in `links.json`. See [`caching-and-refresh.md`](./caching-and-refresh.md) for
+> the full architecture, schedules, and runbook.
+
 1. A user visits `/<page-id>` (e.g. `/corridaguiada`).
 2. `server.go` checks the ID against the `AllowedIDs` map. Unknown IDs get a 404.
-3. For a valid ID, `scraper.Scrape(linktreeURL)` is called.
-4. The scraper fetches the Linktree page and extracts links from two sources:
+3. For a valid ID, the server reads the cached links for that page from
+   `links.json` (fetched from the GitHub raw URL with a 5-minute TTL, with a
+   baked-in file as fallback). A live Linktree scrape is only a last-resort
+   fallback and generally fails from the server's datacenter IP.
+4. The cached `links.json` is produced by the refresh pipeline (`cmd/refresh`
+   via GitHub Actions + ScraperAPI), which extracts links from two sources:
    - HTML: `<a data-testid="LinkClickTriggerLink">` elements rendered in the page.
    - JSON: the `__NEXT_DATA__` script block embedded by Next.js, which contains the full link list even when some links aren't rendered as plain `<a>` tags.
 5. Both sources apply the same URL filter (see below). Duplicates are removed.
