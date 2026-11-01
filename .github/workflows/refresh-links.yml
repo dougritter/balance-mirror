@@ -1,15 +1,37 @@
 name: Refresh Links
 
+# Per-page schedules. GitHub Actions cron is UTC only; Brazil (America/Sao_Paulo)
+# is UTC-3 year-round. Times below are converted to UTC.
+#
+#   balanceclassturma06: Tue & Thu, every 30min 07:00-08:00 BRT  -> 10:00,10:30,11:00 UTC
+#   balanceclassturma08: Tue & Thu, every 30min 09:00-10:00 BRT  -> 12:00,12:30,13:00 UTC
+#   balanceclassturma07: Mon & Wed, every 30min 08:00-09:00 BRT  -> 11:00,11:30,12:00 UTC
+#   corridaguiada:       daily 06:00 & 21:00 BRT                  -> 09:00 & 00:00 UTC
 on:
   schedule:
-    # Every 3 hours. Fits ScraperAPI free tier (~960 req/month at 4 pages).
-    - cron: '0 */3 * * *'
+    # balanceclassturma06 (Tue=2, Thu=4), 10:00/10:30/11:00 UTC
+    - cron: '0,30 10 * * 2,4'
+    - cron: '0 11 * * 2,4'
+    # balanceclassturma08 (Tue=2, Thu=4), 12:00/12:30/13:00 UTC
+    - cron: '0,30 12 * * 2,4'
+    - cron: '0 13 * * 2,4'
+    # balanceclassturma07 (Mon=1, Wed=3), 11:00/11:30/12:00 UTC
+    - cron: '0,30 11 * * 1,3'
+    - cron: '0 12 * * 1,3'
+    # corridaguiada daily, 09:00 & 00:00 UTC
+    - cron: '0 9,0 * * *'
   workflow_dispatch:
+    inputs:
+      pages:
+        description: 'Space-separated page IDs to refresh (empty = all)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
 
 concurrency:
+  # Serialize all refresh runs so merged commits to links.json never collide.
   group: refresh-links
   cancel-in-progress: false
 
@@ -23,10 +45,23 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Scrape Linktree via ScraperAPI and write links.json
+      - name: Determine which pages to refresh
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0,30 10 * * 2,4"|"0 11 * * 2,4")   PAGES="balanceclassturma06" ;;
+            "0,30 12 * * 2,4"|"0 13 * * 2,4")   PAGES="balanceclassturma08" ;;
+            "0,30 11 * * 1,3"|"0 12 * * 1,3")   PAGES="balanceclassturma07" ;;
+            "0 9,0 * * *")                      PAGES="corridaguiada" ;;
+            *)                                  PAGES="${{ github.event.inputs.pages }}" ;;
+          esac
+          echo "pages=$PAGES" >> "$GITHUB_OUTPUT"
+          echo "Refreshing pages: '${PAGES:-ALL}'"
+
+      - name: Scrape via ScraperAPI and merge into links.json
         env:
           SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
-        run: go run ./cmd/refresh
+        run: go run ./cmd/refresh ${{ steps.pick.outputs.pages }}
 
       - name: Commit links.json if changed
         run: |
@@ -37,5 +72,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add links.json
-          git commit -m "chore: refresh links.json"
+          git commit -m "chore: refresh links.json (${{ steps.pick.outputs.pages }})"
+          git pull --rebase --autostash origin main
           git push

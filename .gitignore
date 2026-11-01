@@ -2,6 +2,7 @@
 app
 main
 probe
+refresh
 *.exe
 *.exe~
 *.dll
