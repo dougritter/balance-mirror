@@ -2,12 +2,15 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"balance-mirror/scraper"
 )
@@ -35,17 +38,92 @@ type linkCache struct {
 	Pages       map[string][]scraper.Link `json:"pages"`
 }
 
-// cachedLinks returns links for the given id from links.json, if present.
-// The cache is populated out-of-band (GitHub Actions via a trusted proxy)
-// because the Fly server's datacenter IP is blocked by Linktree.
-func cachedLinks(id string) ([]scraper.Link, bool) {
-	data, err := os.ReadFile("links.json")
+// defaultLinksURL points at the committed links.json on GitHub. GitHub's raw
+// CDN is a trusted IP (unlike Linktree, which blocks this server), so the
+// refresher (GitHub Actions, every 3h) can update links.json and the live site
+// picks it up within cacheTTL — no redeploy required.
+const defaultLinksURL = "https://raw.githubusercontent.com/dougritter/balance-mirror/main/links.json"
+
+// cacheTTL is how long a fetched links.json is reused before refetching.
+const cacheTTL = 5 * time.Minute
+
+var (
+	cacheMu      sync.Mutex
+	cachedData   *linkCache
+	cachedExpiry time.Time
+)
+
+func linksURL() string {
+	if u := os.Getenv("LINKS_JSON_URL"); u != "" {
+		return u
+	}
+	return defaultLinksURL
+}
+
+// loadCache returns the parsed links.json, fetching it from the remote URL and
+// memoizing for cacheTTL. On remote failure it falls back to the baked-in
+// links.json file, then to any previously cached value.
+func loadCache() *linkCache {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+
+	if cachedData != nil && time.Now().Before(cachedExpiry) {
+		return cachedData
+	}
+
+	if c, err := fetchRemoteCache(linksURL()); err == nil {
+		cachedData = c
+		cachedExpiry = time.Now().Add(cacheTTL)
+		return cachedData
+	} else {
+		log.Printf("remote links.json fetch failed: %v; trying baked-in file", err)
+	}
+
+	if c, err := readLocalCache("links.json"); err == nil {
+		cachedData = c
+		cachedExpiry = time.Now().Add(cacheTTL)
+		return cachedData
+	} else {
+		log.Printf("local links.json read failed: %v", err)
+	}
+
+	// Last resort: stale cached value (may be nil on first boot with no file).
+	return cachedData
+}
+
+func fetchRemoteCache(url string) (*linkCache, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.Get(url)
 	if err != nil {
-		return nil, false
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d from %s", res.StatusCode, url)
+	}
+	var c linkCache
+	if err := json.NewDecoder(res.Body).Decode(&c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func readLocalCache(path string) (*linkCache, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
 	var c linkCache
 	if err := json.Unmarshal(data, &c); err != nil {
-		log.Printf("failed to parse links.json: %v", err)
+		return nil, err
+	}
+	return &c, nil
+}
+
+// cachedLinks returns links for the given id from the links.json cache.
+func cachedLinks(id string) ([]scraper.Link, bool) {
+	c := loadCache()
+	if c == nil {
 		return nil, false
 	}
 	links, ok := c.Pages[id]

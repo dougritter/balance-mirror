@@ -5,6 +5,11 @@ on:
   push:
     branches:
       - main
+    # The 3-hourly refresher only commits links.json; the server fetches that
+    # file from GitHub's raw URL at runtime, so those commits don't need a
+    # redeploy. Ignore them to avoid a deploy every 3 hours.
+    paths-ignore:
+      - 'links.json'
 jobs:
   deploy:
     name: Deploy app

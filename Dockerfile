@@ -27,6 +27,10 @@ COPY --from=builder /app/main .
 COPY --from=builder /app/static ./static
 COPY --from=builder /app/templates ./templates
 
+# Copy the pre-scraped link cache. The server reads this instead of scraping
+# Linktree live (Fly's datacenter IP is blocked with 406).
+COPY --from=builder /app/links.json ./links.json
+
 # Expose port 8080 to the outside world
 EXPOSE 8080
 
