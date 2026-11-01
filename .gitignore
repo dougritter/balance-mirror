@@ -1,6 +1,7 @@
 # Binaries
 app
 main
+probe
 *.exe
 *.exe~
 *.dll
