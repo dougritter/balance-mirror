@@ -2,9 +2,12 @@ package scraper
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -26,11 +29,17 @@ func isAllowedURL(href string) bool {
 
 // Scrape fetches the given URL and extracts links from it.
 // It specifically looks for Linktree-style buttons.
-func Scrape(url string) ([]Link, error) {
-	// Request the HTML page with a User-Agent to avoid potential blocking
+// maxAttempts is how many times fetchDocument tries before giving up.
+const maxAttempts = 5
+
+// fetchDocument performs a single browser-like GET and parses the response.
+// It returns the status code alongside the document so the caller can retry
+// on non-200 responses (Linktree/Fastly intermittently returns 406 to
+// datacenter IPs).
+func fetchDocument(url string) (*goquery.Document, int, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// Send a full set of browser-like headers. Sending only User-Agent is a
 	// common bot signal; from datacenter IPs Linktree/Fastly returns 406 for
@@ -45,21 +54,51 @@ func Scrape(url string) ([]Link, error) {
 	req.Header.Set("Sec-Fetch-User", "?1")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		log.Printf("status code error: %d %s", res.StatusCode, res.Status)
+		return nil, res.StatusCode, nil
 	}
 
-	// Load the HTML document
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		return nil, err
+		return nil, res.StatusCode, err
+	}
+	return doc, res.StatusCode, nil
+}
+
+func Scrape(url string) ([]Link, error) {
+	// Linktree/Fastly intermittently returns 406 to datacenter IPs (Fly,
+	// GitHub Actions). Retry with exponential backoff; a real browser never
+	// hammers the endpoint, so pacing requests gets us through.
+	var doc *goquery.Document
+	var lastStatus int
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var err error
+		doc, lastStatus, err = fetchDocument(url)
+		if err != nil {
+			return nil, err
+		}
+		if lastStatus == 200 {
+			break
+		}
+		log.Printf("attempt %d/%d for %s: status %d, retrying", attempt, maxAttempts, url, lastStatus)
+		doc = nil
+		if attempt < maxAttempts {
+			// Backoff: 1s, 2s, 4s, 8s with jitter.
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Int63n(int64(time.Second)))
+			time.Sleep(backoff + jitter)
+		}
+	}
+
+	if doc == nil {
+		return nil, fmt.Errorf("failed to fetch %s after %d attempts (last status %d)", url, maxAttempts, lastStatus)
 	}
 
 	var links []Link
